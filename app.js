@@ -96,17 +96,17 @@ $('driveapikey').value=RESTRICTED_PICKER_API_KEY;
 try{driveFileId=localStorage.getItem('homebank-drive-selected-file')||null}catch(e){}
 function gisReady(){return new Promise((resolve,reject)=>{if(window.google?.accounts?.oauth2)return resolve();const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.onload=()=>window.google?.accounts?.oauth2?resolve():reject(Error('Service Google indisponible'));s.onerror=()=>reject(Error('Impossible de charger Google'));document.head.append(s)})}
 function pickerReady(){return new Promise((resolve,reject)=>{if(window.google?.picker)return resolve();const s=document.createElement('script');s.src='https://apis.google.com/js/api.js';s.onload=()=>gapi.load('picker',{callback:resolve,onerror:()=>reject(Error('Google Picker indisponible'))});s.onerror=()=>reject(Error('Google Picker indisponible'));document.head.append(s)})}
-async function driveRequest(url){if(!driveToken||Date.now()>driveExpires)throw Error('Session Google expirée : reconnecte-toi');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok)throw Error('Drive : erreur '+r.status);return r}
+async function driveRequest(url,stage='lecture'){if(!driveToken||Date.now()>driveExpires)throw Error('Session Google expirée : reconnecte-toi');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok)throw Error('Drive ('+stage+') : erreur '+r.status+(r.status===404?' — fichier non accessible avec les autorisations actuelles':''));return r}
 async function driveRefresh(){
  if(driveBusy)return;driveBusy=true;
  try{
   if(!driveFileId)throw Error('Sélectionne d’abord ton fichier chiffré avec « Choisir le fichier »');
   if(!drivePhrase)throw Error('Phrase secrète nécessaire : reconnecte-toi');
   driveMessage('Vérification du fichier sélectionné…');
-  const meta=await(await driveRequest('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(driveFileId)+'?fields=id,name,mimeType,size,modifiedTime,parents,trashed')).json();
-  if(meta.trashed||meta.name!==DRIVE_NAME||!Array.isArray(meta.parents)||!meta.parents.includes(DRIVE_FOLDER))throw Error('Le fichier choisi n’est pas la copie attendue dans le dossier privé');
+  const meta=await(await driveRequest('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(driveFileId)+'?fields=id,name,mimeType,size,modifiedTime,trashed','métadonnées')).json();
+  if(meta.trashed||meta.name!==DRIVE_NAME)throw Error('Le fichier choisi n’est pas la copie attendue dans le dossier privé');
   if(Number(meta.size)>42000000)throw Error('Fichier trop volumineux');
-  const response=await driveRequest('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(driveFileId)+'?alt=media');
+  const response=await driveRequest('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(driveFileId)+'?alt=media','téléchargement');
   const data=await response.text();if(data.length>42000000)throw Error('Copie trop volumineuse');
   const clear=await decryptHBM(JSON.parse(data),drivePhrase);
   loadSnapshotText(clear,'Google Drive · '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
@@ -119,7 +119,7 @@ async function chooseDriveFile(){
   const key=$('driveapikey').value.trim();if(!key)throw Error('Clé API Google Picker manquante');
   await pickerReady();
   const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setParent(DRIVE_FOLDER);
-  const picker=new google.picker.PickerBuilder().addView(view).setOAuthToken(driveToken).setDeveloperKey(key).setCallback(async data=>{
+  const picker=new google.picker.PickerBuilder().addView(view).setOAuthToken(driveToken).setDeveloperKey(key).setAppId('799426652476').setOrigin(window.location.origin).setCallback(async data=>{
    if(data.action!==google.picker.Action.PICKED)return;
    const f=data.docs?.[0];if(!f?.id)return;
    driveFileId=f.id;try{localStorage.setItem('homebank-drive-selected-file',driveFileId)}catch(e){}
@@ -139,7 +139,7 @@ $('driveconnect').onclick=async()=>{
   driveClient=google.accounts.oauth2.initTokenClient({client_id:id,scope:'https://www.googleapis.com/auth/drive.file',callback:async r=>{
    if(r.error||!r.access_token){driveMessage('Connexion refusée');return}
    driveToken=r.access_token;driveExpires=Date.now()+(Number(r.expires_in)||3500)*1000-60000;
-   if(driveFileId)await driveRefresh();else{driveMessage('Connecté. Choisis maintenant la copie chiffrée.');await chooseDriveFile()}
+   driveMessage('Connecté. Choisis maintenant la copie chiffrée.');await chooseDriveFile()
   },error_callback:()=>driveMessage('Connexion interrompue')});
   driveMessage('Autorisation Google en cours…');driveClient.requestAccessToken({prompt:'consent'});
  }catch(e){driveMessage('Échec : '+e.message)}
