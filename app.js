@@ -30,7 +30,7 @@ function render(){if(!snapshot)return;const visible=snapshot.accounts.filter(a=>
  $('overviewAccounts').replaceChildren();for(const a of visible){const b=balances(a,asof),r=item($('overviewAccounts'),a.name,'',null);const right=el('div',undefined,'overview-sums'),now=el('span',money(b.t),'money '+(b.t<0?'red':'green')),future=el('div',undefined,'future-value');future.append(el('span','À venir :','small'),el('span',money(b.f),'money '+(b.f<0?'red':'green')));right.append(now,future);r.append(right)}
  $('upcoming').replaceChildren();const upcoming=snapshot.operations.filter(o=>isFuture(o,asof)).sort((a,b)=>a.serial-b.serial);if(!upcoming.length)$('upcoming').append(el('div','Aucune opération future enregistrée','empty'));for(const o of upcoming){const detail=dateFR(dateFromSerial(o.serial))+(isReminderOccurrence(o)?' · Rappel à confirmer':' · Opération future');const r=item($('upcoming'),o.payee||snapshot.accounts.find(a=>a.id===o.account)?.name,detail,o.amount);r.classList.add('future-operation');if(isReminderOccurrence(o))r.classList.add('reminder-operation');}
  const body=$('accountRows');body.replaceChildren();for(const [group,label] of [['bank','BANQUE ET ESPÈCES'],['savings','ÉPARGNE']]){const groupAccounts=visible.filter(a=>group==='bank'?a.type!=='7':a.type==='7');if(!groupAccounts.length)continue;const header=el('tr',undefined,'grouphead'),headcell=el('td',label);headcell.colSpan=5;header.append(headcell);body.append(header);for(const a of groupAccounts){const b=balances(a,asof),tr=el('tr');for(const [i,v] of [a.name,b.r,b.p,b.t,b.f].entries()){const cell=el('td',i?num(v):v);if(i)cell.className=v<0?'red':'green';tr.append(cell)}body.append(tr)}}const foot=$('accountTotal');foot.replaceChildren();const sums=['r','p','t','f'].map(k=>sumCents(visible.map(a=>balances(a,asof)[k])));const tr=el('tr');for(const [i,v] of ['Total',...sums].entries()){const cell=el('td',i?num(v):v);cell.style.fontWeight='800';if(i)cell.className=v<0?'red':'green';tr.append(cell)}foot.append(tr);
- renderOps();renderBudget();renderPending();}
+ renderOps();renderBudget();}
 function renderOps(){const target=$('operationsList');target.replaceChildren();if(!snapshot)return;const ac=$('filterAccount').value,month=$('filterMonth').value;const list=snapshot.operations.filter(o=>(ac==='all'||o.account===ac)&&(!month||dateFromSerial(o.serial).startsWith(month))).sort((a,b)=>b.serial-a.serial||b.id-a.id);$('opCount').textContent=list.length+' opération(s)';if(!list.length)target.append(el('div','Aucune opération pour cette sélection','empty'));for(const o of list){const a=snapshot.accounts.find(x=>x.id===o.account);const cat=snapshot.byCat.get(o.category);const pay=paymodes[o.paymode]||['•','Mode '+o.paymode];const r=item(target,o.payee||o.memo||'(sans tiers)',dateFR(dateFromSerial(o.serial))+' · '+a.name+(cat?' · '+cat.name:''),o.amount,pay[0]);if(isFuture(o)){r.classList.add('future-operation');if(isReminderOccurrence(o))r.classList.add('reminder-operation');r.querySelector('.detail')?.append(' · '+(isReminderOccurrence(o)?'Rappel à confirmer':'À venir'));}r.title=pay[1]+' · '+(o.st===2?'Rapprochée':o.st===1?'Pointée':'Non pointée')+(isTransfer(o)?' · Virement interne':'')}}
 function budgetLimit(c,month){return (c.flags&8)?(c.b[Number(month.slice(5))]||0):0}
 function categoryActual(cat,month){return sumCents(snapshot.operations.filter(o=>eligible(o,month)&&o.category===cat.id).map(o=>o.amount))}
@@ -112,12 +112,23 @@ $('rememberdevice').onchange=async e=>{
  if(e.target.checked){
   const phrase=$('drivepass').value||drivePhrase;
   if(!phrase){e.target.checked=false;driveMessage('Saisis une dernière fois ta phrase avant d’activer cet appareil de confiance.');return}
-  try{const saved=await cacheGet('last');if(saved)await decryptHBM(JSON.parse(saved.ciphertext),phrase);await rememberPhrase(phrase);driveMessage('Déverrouillage automatique activé sur cet appareil.')}catch(err){e.target.checked=false;driveMessage('Impossible de mémoriser le déverrouillage : '+err.message)}
+  try{
+   const saved=await cacheGet('last');
+   if(!saved)throw Error('Aucune copie locale enregistrée. Connecte Google et charge le fichier avant d’activer cette option.');
+   await decryptHBM(JSON.parse(saved.ciphertext),phrase);
+   await rememberPhrase(phrase);
+   if(!await restorePhrase())throw Error('La phrase mémorisée ne peut pas être relue');
+   driveMessage('Déverrouillage automatique activé et vérifié. Ferme puis rouvre l’application pour tester.');
+  }catch(err){e.target.checked=false;driveMessage('Impossible de mémoriser le déverrouillage : '+err.message)}
  }else{await forgetRememberedPhrase();driveMessage('Déverrouillage automatique désactivé. La phrase sera redemandée.')}
 };
 async function loadRememberedPhrase(){
  try{
-  const p=await restorePhrase();if(!p)return;
+  const p=await restorePhrase();if(!p){
+   const saved=await cacheGet('last');
+   if(saved)driveMessage('Copie chiffrée conservée sur ce téléphone. Saisis ta phrase puis appuie sur « Ouvrir la copie hors ligne », ou active l’appareil de confiance après connexion.');
+   return;
+  }
   drivePhrase=p;$('rememberdevice').checked=true;
   const saved=await cacheGet('last');if(saved){
    const clear=await decryptHBM(JSON.parse(saved.ciphertext),p);
@@ -151,8 +162,15 @@ async function driveRefresh(){
   const data=await response.text();if(data.length>42000000)throw Error('Copie trop volumineuse');
   const clear=await decryptHBM(JSON.parse(data),drivePhrase);
   loadSnapshotText(clear,'Google Drive · '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
-  try{await cacheSet('last',{ciphertext:data,modifiedTime:meta.modifiedTime});await cacheSet('fileId',driveFileId)}catch(e){console.warn('Cache local chiffré indisponible')}
-  driveMessage('Copie consultable · actualisée : '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
+  let stored=false, trusted=false, cacheError='';
+  try{
+   await cacheSet('last',{ciphertext:data,modifiedTime:meta.modifiedTime});
+   await cacheSet('fileId',driveFileId);
+   stored=true;
+   // La mémorisation n'est confirmée qu'après un chargement valide et une écriture locale réussie.
+   if($('rememberdevice').checked){await rememberPhrase(drivePhrase);trusted=Boolean(await restorePhrase())}
+  }catch(e){cacheError=e?.message||'stockage indisponible';console.warn('Cache local chiffré indisponible')}
+  driveMessage(stored?(trusted?'Copie enregistrée sur ce téléphone · réouverture automatique activée.': 'Copie enregistrée sur ce téléphone · pour la rouvrir sans phrase, active « Faire confiance à ce téléphone ».'):'Copie affichée mais NON enregistrée localement ('+cacheError+'). Elle disparaîtra à la fermeture. Vérifie le stockage du navigateur.');
  }catch(e){driveMessage('Actualisation indisponible : '+e.message+' · Dernière copie locale conservée.') }finally{driveBusy=false}
 }
 async function chooseDriveFile(){
@@ -178,7 +196,7 @@ $('driveconnect').onclick=async()=>{
   if(!phrase&&!drivePhrase)throw Error('Phrase secrète manquante');
   await gisReady();
   drivePhrase=phrase||drivePhrase;$('drivepass').value='';
-  if($('rememberdevice').checked&&phrase)await rememberPhrase(phrase);
+  // Le déverrouillage local sera enregistré uniquement après validation de la copie chiffrée.
   // La copie chiffrée locale reste consultable même si l'autorisation Google échoue.
   try{await offlineOpen()}catch(e){driveMessage('Connexion Google en cours…')}
   driveClient=google.accounts.oauth2.initTokenClient({client_id:id,scope:'https://www.googleapis.com/auth/drive.file',callback:async r=>{
