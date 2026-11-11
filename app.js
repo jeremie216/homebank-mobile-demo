@@ -56,7 +56,8 @@ function renderCharts(){if(!snapshot)return;const month=$('budgetMonth').value;c
 function renderPending(){const target=$('pendingList');target.replaceChildren();$('pendingCount').textContent=pending.length;if(!pending.length)target.append(el('div','Aucune opération en attente','empty'));for(const p of pending){const r=item(target,p.payee||'(sans tiers)',dateFR(p.date)+' · '+(p.accountName||p.account),p.amount);const b=el('button','Retirer','secondary');b.style.fontSize='11px';b.onclick=()=>{if(confirm('Retirer cette opération de la file ?')){pending=pending.filter(x=>x.id!==p.id);save();renderPending()}};r.append(b)}}
 function prepareForm(){const visible=snapshot.accounts.filter(a=>a.visible),catNames=new Map(snapshot.categories.map(c=>[c.id,c.name]));choices('filterAccount',[['all','Tous les comptes'],...visible.map(a=>[a.id,a.name])]);choices('eaccount',visible.map(a=>[a.id,a.name]));choices('ecat',[['','(aucune)'],...snapshot.categories.map(c=>[c.id,(c.parent?(catNames.get(c.parent)||'')+' › ':'')+c.name])]);choices('template',[['','Aucun modèle'],...snapshot.models.map(m=>[m.id,m.payee||m.memo||catNames.get(m.category)||'Modèle '+m.id])]);choices('epaymode',Object.entries(paymodes).map(([k,v])=>[k,v[1]]));$('payees').replaceChildren(...snapshot.payees.map(p=>{const o=el('option');o.value=p.name;return o}));}
 function setMonthChoices(id,ops){const months=[...new Set(ops.map(o=>dateFromSerial(o.serial).slice(0,7)))].sort().reverse();const current=dateToday().slice(0,7);if(!months.includes(current))months.unshift(current);const fmt=new Intl.DateTimeFormat('fr-FR',{month:'long',year:'numeric',timeZone:'UTC'});choices(id,months.map(m=>[m,fmt.format(new Date(m+'-01T12:00:00Z'))]));$(id).value=current}
-$('file').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;try{if(f.size>30e6)throw Error('Fichier supérieur à 30 Mo');const next=readXHB(await f.text());snapshot=next;expanded=null;prepareForm();setMonthChoices('filterMonth',snapshot.operations);setMonthChoices('budgetMonth',snapshot.operations);$('status').textContent=`Lecture locale : ${snapshot.accounts.length} comptes, ${snapshot.operations.length} opérations, ${snapshot.categories.length} catégories, ${snapshot.models.length} modèles. Fichier jamais modifié.`;render()}catch(err){$('status').textContent='Échec : '+err.message}};
+function loadSnapshotText(text,label){const next=readXHB(text);snapshot=next;expanded=null;prepareForm();setMonthChoices('filterMonth',snapshot.operations);setMonthChoices('budgetMonth',snapshot.operations);$('status').textContent=`${label} : ${snapshot.accounts.length} comptes, ${snapshot.operations.length} opérations, ${snapshot.categories.length} catégories, ${snapshot.models.length} modèles. Lecture seule.`;render()}
+$('file').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;try{if(f.size>30e6)throw Error('Fichier supérieur à 30 Mo');loadSnapshotText(await f.text(),'Lecture locale')}catch(err){$('status').textContent='Échec : '+err.message}};
 $('filterAccount').onchange=renderOps;$('filterMonth').onchange=renderOps;$('allMonths').onclick=()=>{$('filterMonth').value='';renderOps()};$('budgetMonth').onchange=()=>{expanded=null;renderBudget()};
 $('template').onchange=()=>{if(!snapshot)return;const m=snapshot.models.find(x=>x.id===$('template').value);if(!m)return;if(snapshot.accounts.some(a=>a.id===m.account&&a.visible))$('eaccount').value=m.account;$('etype').value=m.amount<0?'expense':'income';$('eamount').value=Math.abs(m.amount)||'';$('epaymode').value=m.paymode;$('epayee').value=m.payee;$('ecat').value=m.category;$('ememo').value=m.memo};
 $('entryForm').onsubmit=e=>{e.preventDefault();if(!snapshot)return alert('Charge d’abord une copie XHB');const account=snapshot.accounts.find(a=>a.id===$('eaccount').value&&a.visible),amount=Number($('eamount').value);if(!account||!Number.isFinite(amount)||amount<=0)return alert('Compte ou montant invalide');const p={id:crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random(),date:$('edate').value,account:account.id,accountName:account.name,amount:amount*($('etype').value==='expense'?-1:1),payee:$('epayee').value.trim(),category:$('ecat').value,paymode:$('epaymode').value,st:Number($('estate').value),memo:$('ememo').value.trim()};pending.push(p);if(!save()){pending.pop();return}renderPending();$('entryForm').reset();$('edate').value=dateToday();switchTab('etab','waiting')};
@@ -68,3 +69,81 @@ document.querySelectorAll('[data-btab]').forEach(b=>b.onclick=()=>switchTab('bta
 try{$('theme').value=localStorage.getItem('compagnon-theme')||'auto'}catch(e){}function applyTheme(v){document.body.className=v==='light'?'':v;try{localStorage.setItem('compagnon-theme',v)}catch(e){}}applyTheme($('theme').value);$('theme').onchange=e=>applyTheme(e.target.value);$('edate').value=dateToday();renderPending();
 // Cache uniquement les fichiers de l'interface, jamais le fichier XHB ni les opérations personnelles.
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+
+// Format HBM1 : JSON {format,iterations,salt,iv,ciphertext} en base64, AES-256-GCM + PBKDF2-SHA256.
+const b64bytes=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function decryptHBM(data,phrase){
+ if(data.format!=='HBM1'||data.kdf!=='PBKDF2-SHA256'||data.cipher!=='AES-256-GCM'||data.iterations!==600000)throw Error('Format chiffré non reconnu');
+ const salt=b64bytes(data.salt),iv=b64bytes(data.iv),ciphertext=b64bytes(data.ciphertext);
+ if(salt.length!==16||iv.length!==12||ciphertext.length<16||ciphertext.length>30000000)throw Error('Fichier chiffré invalide');
+ const pass=await crypto.subtle.importKey('raw',new TextEncoder().encode(phrase),'PBKDF2',false,['deriveKey']);
+ const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:data.iterations,hash:'SHA-256'},pass,{name:'AES-GCM',length:256},false,['decrypt']);
+ return new TextDecoder('utf-8',{fatal:true}).decode(await crypto.subtle.decrypt({name:'AES-GCM',iv},key,ciphertext));
+}
+$('decrypt').onclick=async()=>{const f=$('securefile').files?.[0],p=$('securepass').value;if(!f||!p)return alert('Choisis le fichier chiffré et sa phrase secrète');try{if(f.size>42000000)throw Error('Fichier trop volumineux');const data=JSON.parse(await f.text());const clear=await decryptHBM(data,p);loadSnapshotText(clear,'Copie chiffrée déverrouillée');$('securepass').value=''}catch(e){$('status').textContent='Déchiffrement impossible : mot de passe incorrect ou fichier invalide.';console.warn('Erreur import chiffré (sans données)')}};
+
+
+// Drive: portée drive.file. L'utilisateur choisit explicitement le fichier via Google Picker.
+// Le fichier sélectionné reste identifié localement; aucun jeton ni mot de passe persistant.
+const DRIVE_FOLDER='1_cySu9HEWJ5SvbPzYBV0Iy-KDsnV4gru';
+const PUBLIC_OAUTH_CLIENT_ID='799426652476-ttqc24opr5nlacq3v2077jg9nlibce56.apps.googleusercontent.com';
+const RESTRICTED_PICKER_API_KEY='AIzaSyDcejmeTrpE8hvEXn7POHrCmiM6XBjbd1I';
+const DRIVE_NAME='homebank-copie-chiffree.hbm';
+let driveToken=null,driveExpires=0,drivePhrase=null,driveClient=null,driveBusy=false,driveFileId=null;
+const driveMessage=s=>{$('drivestatus').textContent=s};
+$('driveclient').value=PUBLIC_OAUTH_CLIENT_ID;
+$('driveapikey').value=RESTRICTED_PICKER_API_KEY;
+try{driveFileId=localStorage.getItem('homebank-drive-selected-file')||null}catch(e){}
+function gisReady(){return new Promise((resolve,reject)=>{if(window.google?.accounts?.oauth2)return resolve();const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.onload=()=>window.google?.accounts?.oauth2?resolve():reject(Error('Service Google indisponible'));s.onerror=()=>reject(Error('Impossible de charger Google'));document.head.append(s)})}
+function pickerReady(){return new Promise((resolve,reject)=>{if(window.google?.picker)return resolve();const s=document.createElement('script');s.src='https://apis.google.com/js/api.js';s.onload=()=>gapi.load('picker',{callback:resolve,onerror:()=>reject(Error('Google Picker indisponible'))});s.onerror=()=>reject(Error('Google Picker indisponible'));document.head.append(s)})}
+async function driveRequest(url){if(!driveToken||Date.now()>driveExpires)throw Error('Session Google expirée : reconnecte-toi');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok)throw Error('Drive : erreur '+r.status);return r}
+async function driveRefresh(){
+ if(driveBusy)return;driveBusy=true;
+ try{
+  if(!driveFileId)throw Error('Sélectionne d’abord ton fichier chiffré avec « Choisir le fichier »');
+  if(!drivePhrase)throw Error('Phrase secrète nécessaire : reconnecte-toi');
+  driveMessage('Vérification du fichier sélectionné…');
+  const meta=await(await driveRequest('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(driveFileId)+'?fields=id,name,mimeType,size,modifiedTime,parents,trashed')).json();
+  if(meta.trashed||meta.name!==DRIVE_NAME||!Array.isArray(meta.parents)||!meta.parents.includes(DRIVE_FOLDER))throw Error('Le fichier choisi n’est pas la copie attendue dans le dossier privé');
+  if(Number(meta.size)>42000000)throw Error('Fichier trop volumineux');
+  const response=await driveRequest('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(driveFileId)+'?alt=media');
+  const data=await response.text();if(data.length>42000000)throw Error('Copie trop volumineuse');
+  const clear=await decryptHBM(JSON.parse(data),drivePhrase);
+  loadSnapshotText(clear,'Google Drive · '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
+  driveMessage('Actualisation réussie : '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
+ }catch(e){driveMessage('Échec : '+e.message)}finally{driveBusy=false}
+}
+async function chooseDriveFile(){
+ try{
+  if(!driveToken||Date.now()>driveExpires)throw Error('Connecte Google avant de choisir le fichier');
+  const key=$('driveapikey').value.trim();if(!key)throw Error('Clé API Google Picker manquante');
+  await pickerReady();
+  const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setParent(DRIVE_FOLDER);
+  const picker=new google.picker.PickerBuilder().addView(view).setOAuthToken(driveToken).setDeveloperKey(key).setCallback(async data=>{
+   if(data.action!==google.picker.Action.PICKED)return;
+   const f=data.docs?.[0];if(!f?.id)return;
+   driveFileId=f.id;try{localStorage.setItem('homebank-drive-selected-file',driveFileId)}catch(e){}
+   await driveRefresh();
+  }).build();picker.setVisible(true);
+ }catch(e){driveMessage('Sélection impossible : '+e.message)}
+}
+$('drivechoose').onclick=chooseDriveFile;
+$('driveconnect').onclick=async()=>{
+ try{
+  const id=$('driveclient').value.trim(),phrase=$('drivepass').value,key=$('driveapikey').value.trim();
+  if(!/^[0-9]+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$/.test(id))throw Error('Identifiant OAuth invalide');
+  if(!key)throw Error('Clé API Google Picker manquante');
+  if(!phrase)throw Error('Phrase secrète manquante');
+  await gisReady();
+  drivePhrase=phrase;$('drivepass').value='';
+  driveClient=google.accounts.oauth2.initTokenClient({client_id:id,scope:'https://www.googleapis.com/auth/drive.file',callback:async r=>{
+   if(r.error||!r.access_token){driveMessage('Connexion refusée');return}
+   driveToken=r.access_token;driveExpires=Date.now()+(Number(r.expires_in)||3500)*1000-60000;
+   if(driveFileId)await driveRefresh();else{driveMessage('Connecté. Choisis maintenant la copie chiffrée.');await chooseDriveFile()}
+  },error_callback:()=>driveMessage('Connexion interrompue')});
+  driveMessage('Autorisation Google en cours…');driveClient.requestAccessToken({prompt:'consent'});
+ }catch(e){driveMessage('Échec : '+e.message)}
+};
+$('driverefresh').onclick=driveRefresh;
+$('drivedisconnect').onclick=()=>{const token=driveToken;driveToken=null;driveExpires=0;drivePhrase=null;$('drivepass').value='';if(token&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(token,()=>{});driveMessage('Déconnecté. Aucun jeton ni secret conservé.')};
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&driveToken&&drivePhrase&&Date.now()<driveExpires)driveRefresh()});
