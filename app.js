@@ -93,10 +93,10 @@ let driveToken=null,driveExpires=0,drivePhrase=null,driveClient=null,driveBusy=f
 const driveMessage=s=>{$('drivestatus').textContent=s};
 $('driveclient').value=PUBLIC_OAUTH_CLIENT_ID;
 $('driveapikey').value=RESTRICTED_PICKER_API_KEY;
-try{driveFileId=localStorage.getItem('homebank-drive-selected-file')||null}catch(e){}
+// Ne jamais réutiliser automatiquement un ancien identifiant Drive.
 function gisReady(){return new Promise((resolve,reject)=>{if(window.google?.accounts?.oauth2)return resolve();const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.onload=()=>window.google?.accounts?.oauth2?resolve():reject(Error('Service Google indisponible'));s.onerror=()=>reject(Error('Impossible de charger Google'));document.head.append(s)})}
 function pickerReady(){return new Promise((resolve,reject)=>{if(window.google?.picker)return resolve();const s=document.createElement('script');s.src='https://apis.google.com/js/api.js';s.onload=()=>gapi.load('picker',{callback:resolve,onerror:()=>reject(Error('Google Picker indisponible'))});s.onerror=()=>reject(Error('Google Picker indisponible'));document.head.append(s)})}
-async function driveRequest(url,stage='lecture'){if(!driveToken||Date.now()>driveExpires)throw Error('Session Google expirée : reconnecte-toi');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok)throw Error('Drive ('+stage+') : erreur '+r.status+(r.status===404?' — fichier non accessible avec les autorisations actuelles':''));return r}
+async function driveRequest(url,stage='lecture'){if(!driveToken||Date.now()>driveExpires)throw Error('Session Google expirée : reconnecte-toi');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok){let detail='';try{const body=await r.json();detail=body?.error?.message||''}catch(e){}throw Error('Drive ('+stage+') : erreur '+r.status+(detail?' — '+detail:''))}return r}
 async function driveRefresh(){
  if(driveBusy)return;driveBusy=true;
  try{
@@ -122,7 +122,7 @@ async function chooseDriveFile(){
   const picker=new google.picker.PickerBuilder().addView(view).setOAuthToken(driveToken).setDeveloperKey(key).setAppId('799426652476').setOrigin(window.location.origin).setCallback(async data=>{
    if(data.action!==google.picker.Action.PICKED)return;
    const f=data.docs?.[0];if(!f?.id)return;
-   driveFileId=f.id;try{localStorage.setItem('homebank-drive-selected-file',driveFileId)}catch(e){}
+   driveFileId=f.id;driveMessage('Fichier sélectionné : '+(f.name||'copie chiffrée')+'. Lecture en cours…');
    await driveRefresh();
   }).build();picker.setVisible(true);
  }catch(e){driveMessage('Sélection impossible : '+e.message)}
@@ -139,11 +139,11 @@ $('driveconnect').onclick=async()=>{
   driveClient=google.accounts.oauth2.initTokenClient({client_id:id,scope:'https://www.googleapis.com/auth/drive.file',callback:async r=>{
    if(r.error||!r.access_token){driveMessage('Connexion refusée');return}
    driveToken=r.access_token;driveExpires=Date.now()+(Number(r.expires_in)||3500)*1000-60000;
-   driveMessage('Connecté. Choisis maintenant la copie chiffrée.');await chooseDriveFile()
+   driveFileId=null;driveMessage('Connexion Google réussie. Sélectionne ton fichier avec « Choisir le fichier ».');
   },error_callback:()=>driveMessage('Connexion interrompue')});
   driveMessage('Autorisation Google en cours…');driveClient.requestAccessToken({prompt:'consent'});
  }catch(e){driveMessage('Échec : '+e.message)}
 };
 $('driverefresh').onclick=driveRefresh;
 $('drivedisconnect').onclick=()=>{const token=driveToken;driveToken=null;driveExpires=0;drivePhrase=null;$('drivepass').value='';if(token&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(token,()=>{});driveMessage('Déconnecté. Aucun jeton ni secret conservé.')};
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&driveToken&&drivePhrase&&Date.now()<driveExpires)driveRefresh()});
+// Actualisation uniquement sur demande, jamais lors d’un simple retour à l’application.
