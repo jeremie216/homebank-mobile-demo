@@ -5,10 +5,7 @@ const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefine
 const base=new Date(Date.UTC(2000,0,1));base.setUTCFullYear(1);const epoch=base.getTime(), dateFromSerial=n=>{const d=new Date(epoch);d.setUTCFullYear(1);d.setUTCDate(d.getUTCDate()+n-1);return d.toISOString().slice(0,10)};
 const serialFromDate=s=>{const [y,m,d]=s.split('-').map(Number);return Math.round((Date.UTC(y,m-1,d)-epoch)/86400000)+1};
 const dateToday=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
-let snapshot=null, expanded=null, pending=[];
-const store='compagnon-bancaire-pending-v04';
-try{const x=JSON.parse(localStorage.getItem(store)||'[]');if(Array.isArray(x))pending=x.filter(v=>v&&typeof v.id==='string'&&typeof v.date==='string'&&Number.isFinite(v.amount))}catch(e){}
-function save(){try{localStorage.setItem(store,JSON.stringify(pending));return true}catch(e){alert('Impossible de sauvegarder la file locale. Exportez immédiatement les données.');return false}}
+let snapshot=null, expanded=null;
 function choices(id,arr){const node=$(id),old=node.value;node.replaceChildren();for(const [v,t] of arr){const op=el('option',t);op.value=v;node.append(op)}if(arr.some(([v])=>v===old))node.value=old}
 function readXHB(text){const doc=new DOMParser().parseFromString(text,'application/xml');if(doc.querySelector('parsererror')||doc.documentElement.tagName!=='homebank')throw Error('XML HomeBank invalide');const root=doc.documentElement, nodes=t=>[...root.children].filter(n=>n.tagName===t),attr=(n,k)=>n.getAttribute(k)||'';
  const accounts=nodes('account').map(n=>({id:attr(n,'key'),name:attr(n,'name'),type:attr(n,'type'),pos:Number(attr(n,'pos')||0),visible:!(Number(attr(n,'flags')||0)&16),initial:Number(attr(n,'initial')||0)})).sort((a,b)=>a.pos-b.pos);if(!accounts.length)throw Error('Aucun compte');const byAcc=new Map(accounts.map(a=>[a.id,a]));
@@ -53,20 +50,14 @@ function categoryLine(parent,name,actual,budget,sub=false,isSavings=false){
 function renderBudget(){if(!snapshot)return;const month=$('budgetMonth').value,root=$('budgetList');root.replaceChildren();const cats=snapshot.categories;const topLevel=cats.filter(c=>!c.parent).sort((a,b)=>{const rank=c=>c.name.toLocaleLowerCase('fr')==='traitements et salaires'?0:c.name.toLocaleLowerCase('fr')==='épargne'?1:2;return rank(a)-rank(b)});for(const c of topLevel){const children=cats.filter(x=>x.parent===c.id);const actual=categoryActual(c,month)+sumCents(children.map(x=>categoryActual(x,month))),budget=budgetLimit(c,month)+sumCents(children.map(x=>budgetLimit(x,month)));if(!budget)continue;const container=el('div'),btn=categoryLine(container,(expanded===c.id?'▾ ':'▸ ')+c.name,actual,budget,false,c.name==='Épargne'),sub=el('div',undefined,'subcats');sub.hidden=expanded!==c.id;for(const child of children){const a=categoryActual(child,month),b=budgetLimit(child,month);if(a||b)categoryLine(sub,child.name,a,b,true,c.name==='Épargne').disabled=true}btn.onclick=()=>{expanded=expanded===c.id?null:c.id;renderBudget()};container.append(sub);root.append(container)}if(!root.children.length)root.append(el('div','Aucune catégorie budgétée pour ce mois','empty'));renderCharts()}
 function renderCharts(){if(!snapshot)return;const month=$('budgetMonth').value;const cats=snapshot.categories;const byCategory=cats.filter(c=>!c.parent).map(c=>{const children=cats.filter(x=>x.parent===c.id);const value=incomeCategory(c.id)?0:-sumCents([categoryActual(c,month),...children.map(x=>categoryActual(x,month))]);return {name:c.name,value}}).filter(x=>x.value>0);const donut=$('donut');donut.replaceChildren();if(!byCategory.length){donut.append(el('div','Aucune dépense pour cette période','empty'))}else{const colors=['#4679b6','#b5c7e7','#e98827','#edb97c','#64a67c','#8c79c7','#a3a3a3'];const sum=byCategory.reduce((s,a)=>s+a.value,0);const net=calcMonthly(month).expense;let angle=0;const segments=byCategory.map((a,i)=>{const start=angle;angle+=360*a.value/sum;return `${colors[i%colors.length]} ${start}deg ${angle}deg`});const disk=el('div');disk.style.cssText=`width:180px;height:180px;border-radius:50%;margin:12px auto;background:conic-gradient(${segments.join(',')});position:relative`;const hole=el('div');hole.style.cssText='position:absolute;inset:37px;border-radius:50%;background:var(--card);display:grid;place-items:center;font-weight:750;font-size:13px';hole.textContent='Net '+money(net);disk.append(hole);donut.append(disk);const legend=el('div',undefined,'legend');byCategory.forEach((a,i)=>{const v=el('span',a.name+' · '+Math.round(100*a.value/sum)+' %');v.style.setProperty('--c',colors[i%colors.length]);legend.append(v)});donut.append(legend);donut.append(el('div','Dépenses nettes : '+money(net)+(Math.abs(sum-net)>0.005?' · Total des catégories représentées : '+money(sum):'')+'. Les remboursements sont déduits de leurs catégories.','notice'))}
  const bars=$('bars');bars.replaceChildren();const year=month.slice(0,4),data=Array.from({length:12},(_,i)=>calcMonthly(year+'-'+String(i+1).padStart(2,'0')));const max=Math.max(1,...data.flatMap(d=>[d.income,d.expense]));const W=350,H=230,left=39,zero=115,scale=96/max,step=25;const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.setAttribute('class','chart');svg.setAttribute('role','img');svg.setAttribute('aria-label','Revenus au-dessus de zéro en vert, dépenses au-dessous en rouge');function svgEl(t,attrs,txt){const n=document.createElementNS('http://www.w3.org/2000/svg',t);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,v);if(txt!==undefined)n.textContent=txt;svg.append(n)}svgEl('line',{x1:left,y1:zero,x2:W-3,y2:zero,stroke:'var(--muted)','stroke-width':1.3});for(let i=1;i<=2;i++){for(const sign of [-1,1]){const y=zero+sign*i*45;svgEl('line',{x1:left,y1:y,x2:W-3,y2:y,stroke:'var(--line)'});svgEl('text',{x:0,y:y+3,'font-size':9,fill:'var(--muted)'},(sign<0?'+':'−')+Math.round(i*45/scale).toLocaleString('fr-FR'))}}data.forEach((d,i)=>{const x=left+4+i*step;svgEl('rect',{x,y:zero-d.income*scale,width:17,height:d.income*scale,fill:'#5b9d39'});svgEl('rect',{x,y:zero,width:17,height:d.expense*scale,fill:'#bc3437'});svgEl('text',{x:x+8,y:zero+108,'text-anchor':'middle','font-size':9,fill:'var(--muted)'},String(i+1))});bars.append(svg);bars.append(el('div','Vert : revenus · Rouge : dépenses · Montants mensuels hors virements internes','notice'))}
-function renderPending(){const target=$('pendingList');target.replaceChildren();$('pendingCount').textContent=pending.length;if(!pending.length)target.append(el('div','Aucune opération en attente','empty'));for(const p of pending){const r=item(target,p.payee||'(sans tiers)',dateFR(p.date)+' · '+(p.accountName||p.account),p.amount);const b=el('button','Retirer','secondary');b.style.fontSize='11px';b.onclick=()=>{if(confirm('Retirer cette opération de la file ?')){pending=pending.filter(x=>x.id!==p.id);save();renderPending()}};r.append(b)}}
-function prepareForm(){const visible=snapshot.accounts.filter(a=>a.visible),catNames=new Map(snapshot.categories.map(c=>[c.id,c.name]));choices('filterAccount',[['all','Tous les comptes'],...visible.map(a=>[a.id,a.name])]);choices('eaccount',visible.map(a=>[a.id,a.name]));choices('ecat',[['','(aucune)'],...snapshot.categories.map(c=>[c.id,(c.parent?(catNames.get(c.parent)||'')+' › ':'')+c.name])]);choices('template',[['','Aucun modèle'],...snapshot.models.map(m=>[m.id,m.payee||m.memo||catNames.get(m.category)||'Modèle '+m.id])]);choices('epaymode',Object.entries(paymodes).map(([k,v])=>[k,v[1]]));$('payees').replaceChildren(...snapshot.payees.map(p=>{const o=el('option');o.value=p.name;return o}));}
+function prepareForm(){const visible=snapshot.accounts.filter(a=>a.visible);choices('filterAccount',[['all','Tous les comptes'],...visible.map(a=>[a.id,a.name])])}
 function setMonthChoices(id,ops){const months=[...new Set(ops.map(o=>dateFromSerial(o.serial).slice(0,7)))].sort().reverse();const current=dateToday().slice(0,7);if(!months.includes(current))months.unshift(current);const fmt=new Intl.DateTimeFormat('fr-FR',{month:'long',year:'numeric',timeZone:'UTC'});choices(id,months.map(m=>[m,fmt.format(new Date(m+'-01T12:00:00Z'))]));$(id).value=current}
 function loadSnapshotText(text,label){const next=readXHB(text);snapshot=next;expanded=null;prepareForm();setMonthChoices('filterMonth',snapshot.operations);setMonthChoices('budgetMonth',snapshot.operations);$('status').textContent=`${label} : ${snapshot.accounts.length} comptes, ${snapshot.operations.length} opérations, ${snapshot.categories.length} catégories, ${snapshot.models.length} modèles. Lecture seule.`;render()}
 $('file').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;try{if(f.size>30e6)throw Error('Fichier supérieur à 30 Mo');loadSnapshotText(await f.text(),'Lecture locale')}catch(err){$('status').textContent='Échec : '+err.message}};
 $('filterAccount').onchange=renderOps;$('filterMonth').onchange=renderOps;$('allMonths').onclick=()=>{$('filterMonth').value='';renderOps()};$('budgetMonth').onchange=()=>{expanded=null;renderBudget()};
-$('template').onchange=()=>{if(!snapshot)return;const m=snapshot.models.find(x=>x.id===$('template').value);if(!m)return;if(snapshot.accounts.some(a=>a.id===m.account&&a.visible))$('eaccount').value=m.account;$('etype').value=m.amount<0?'expense':'income';$('eamount').value=Math.abs(m.amount)||'';$('epaymode').value=m.paymode;$('epayee').value=m.payee;$('ecat').value=m.category;$('ememo').value=m.memo};
-$('entryForm').onsubmit=e=>{e.preventDefault();if(!snapshot)return alert('Charge d’abord une copie XHB');const account=snapshot.accounts.find(a=>a.id===$('eaccount').value&&a.visible),amount=Number($('eamount').value);if(!account||!Number.isFinite(amount)||amount<=0)return alert('Compte ou montant invalide');const p={id:crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random(),date:$('edate').value,account:account.id,accountName:account.name,amount:amount*($('etype').value==='expense'?-1:1),payee:$('epayee').value.trim(),category:$('ecat').value,paymode:$('epaymode').value,st:Number($('estate').value),memo:$('ememo').value.trim()};pending.push(p);if(!save()){pending.pop();return}renderPending();$('entryForm').reset();$('edate').value=dateToday();switchTab('etab','waiting')};
-function download(name,text,type){const u=URL.createObjectURL(new Blob([text],{type})),a=el('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000)}
-$('backup').onclick=()=>download('compagnon-attente-v04.json',JSON.stringify({version:4,pending},null,2),'application/json');
-$('qif').onclick=()=>{if(!pending.length)return alert('Aucune opération en attente');const clean=s=>String(s||'').replace(/[\r\n^]/g,' ');let out='';for(const a of new Set(pending.map(p=>p.account))){const ps=pending.filter(p=>p.account===a);out+='!Account\nN'+clean(ps[0].accountName)+'\nTBank\n^\n!Type:Bank\n';for(const p of ps){const [y,m,d]=p.date.split('-');out+=`D${y}/${m}/${d}\nT${p.amount.toFixed(2)}\nP${clean(p.payee)}\nM${clean(p.memo)}\n^\n`}}download('homebank-mobile-operations.qif',out,'application/x-qif');alert('QIF exporté. Les opérations restent en attente : retire-les uniquement après vérification de leur import dans HomeBank. Si Android ajoute .txt, renomme le fichier en .qif.')};
-function switchTab(prefix,id){document.querySelectorAll(`[data-${prefix}]`).forEach(b=>b.classList.toggle('active',b.dataset[prefix]===id));const root=prefix==='btab'?$('budget'):prefix==='ctab'?$('accounts'):$('entry');root.querySelectorAll('.subpage').forEach(p=>p.classList.toggle('active',p.id===id))}
-document.querySelectorAll('[data-btab]').forEach(b=>b.onclick=()=>switchTab('btab',b.dataset.btab));document.querySelectorAll('[data-ctab]').forEach(b=>b.onclick=()=>switchTab('ctab',b.dataset.ctab));document.querySelectorAll('[data-etab]').forEach(b=>b.onclick=()=>switchTab('etab',b.dataset.etab));document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>{const id=b.dataset.goto;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===id));document.querySelectorAll('.nav button').forEach(n=>n.classList.toggle('active',n.dataset.goto===id));window.scrollTo(0,0)});
-try{$('theme').value=localStorage.getItem('compagnon-theme')||'auto'}catch(e){}function applyTheme(v){document.body.className=v==='light'?'':v;try{localStorage.setItem('compagnon-theme',v)}catch(e){}}applyTheme($('theme').value);$('theme').onchange=e=>applyTheme(e.target.value);$('edate').value=dateToday();renderPending();
+function switchTab(prefix,id){document.querySelectorAll(`[data-${prefix}]`).forEach(b=>b.classList.toggle('active',b.dataset[prefix]===id));const root=prefix==='btab'?$('budget'):$('accounts');root.querySelectorAll('.subpage').forEach(p=>p.classList.toggle('active',p.id===id))}
+document.querySelectorAll('[data-btab]').forEach(b=>b.onclick=()=>switchTab('btab',b.dataset.btab));document.querySelectorAll('[data-ctab]').forEach(b=>b.onclick=()=>switchTab('ctab',b.dataset.ctab));document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>{const id=b.dataset.goto;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===id));document.querySelectorAll('.nav button').forEach(n=>n.classList.toggle('active',n.dataset.goto===id));window.scrollTo(0,0)});
+try{$('theme').value=localStorage.getItem('compagnon-theme')||'auto'}catch(e){}function applyTheme(v){document.body.className=v==='light'?'':v;try{localStorage.setItem('compagnon-theme',v)}catch(e){}}applyTheme($('theme').value);$('theme').onchange=e=>applyTheme(e.target.value);
 // Cache uniquement les fichiers de l'interface, jamais le fichier XHB ni les opérations personnelles.
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
@@ -89,16 +80,66 @@ const DRIVE_FOLDER='1_cySu9HEWJ5SvbPzYBV0Iy-KDsnV4gru';
 const PUBLIC_OAUTH_CLIENT_ID='799426652476-ttqc24opr5nlacq3v2077jg9nlibce56.apps.googleusercontent.com';
 const RESTRICTED_PICKER_API_KEY='AIzaSyDcejmeTrpE8hvEXn7POHrCmiM6XBjbd1I';
 const DRIVE_NAME='homebank-copie-chiffree.hbm';
-let driveToken=null,driveExpires=0,drivePhrase=null,driveClient=null,driveBusy=false,driveFileId=null;
+let driveToken=null,driveExpires=0,drivePhrase=null,driveClient=null,driveBusy=false,driveFileId=null,lastDriveCheck=0;
+const CACHE_DB='hbm-private-cache-v1';
+function cacheOpen(){return new Promise((resolve,reject)=>{const q=indexedDB.open(CACHE_DB,1);q.onupgradeneeded=()=>q.result.createObjectStore('files');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
+async function cacheSet(key,value){const db=await cacheOpen();try{await new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite');tx.objectStore('files').put(value,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)})}finally{db.close()}}
+async function cacheGet(key){const db=await cacheOpen();try{return await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly');const q=tx.objectStore('files').get(key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}finally{db.close()}}
+async function cacheClear(){const db=await cacheOpen();try{await new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite');tx.objectStore('files').clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)})}finally{db.close()}}
+// Option explicite « appareil de confiance » : secret enveloppé sous une clé AES non exportable.
+// La protection repose sur le verrouillage Android et l'intégrité du code servi par GitHub Pages.
+// Ce n'est PAS une authentification biométrique et ne résiste pas à du JavaScript malveillant sur la même origine.
+async function rememberPhrase(phrase){
+ const key=await crypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+ const iv=crypto.getRandomValues(new Uint8Array(12));
+ const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(phrase));
+ await cacheSet('device-key',key);
+ await cacheSet('device-secret',{iv:Array.from(iv),cipher:Array.from(new Uint8Array(encrypted))});
+}
+async function restorePhrase(){
+ const key=await cacheGet('device-key'),saved=await cacheGet('device-secret');
+ if(!key||!saved)return null;
+ try{return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(saved.iv)},key,new Uint8Array(saved.cipher)))}
+ catch(e){return null}
+}
+async function forgetRememberedPhrase(){
+ const db=await cacheOpen();try{await new Promise((resolve,reject)=>{
+ const tx=db.transaction('files','readwrite');tx.objectStore('files').delete('device-key');tx.objectStore('files').delete('device-secret');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)
+ })}finally{db.close()}
+ drivePhrase=null;
+}
+$('rememberdevice').onchange=async e=>{
+ if(e.target.checked){
+  const phrase=$('drivepass').value||drivePhrase;
+  if(!phrase){e.target.checked=false;driveMessage('Saisis une dernière fois ta phrase avant d’activer cet appareil de confiance.');return}
+  try{const saved=await cacheGet('last');if(saved)await decryptHBM(JSON.parse(saved.ciphertext),phrase);await rememberPhrase(phrase);driveMessage('Déverrouillage automatique activé sur cet appareil.')}catch(err){e.target.checked=false;driveMessage('Impossible de mémoriser le déverrouillage : '+err.message)}
+ }else{await forgetRememberedPhrase();driveMessage('Déverrouillage automatique désactivé. La phrase sera redemandée.')}
+};
+async function loadRememberedPhrase(){
+ try{
+  const p=await restorePhrase();if(!p)return;
+  drivePhrase=p;$('rememberdevice').checked=true;
+  const saved=await cacheGet('last');if(saved){
+   const clear=await decryptHBM(JSON.parse(saved.ciphertext),p);
+   loadSnapshotText(clear,'Copie locale du '+new Date(saved.modifiedTime).toLocaleString('fr-FR'));
+   driveMessage('Copie locale ouverte automatiquement · '+new Date(saved.modifiedTime).toLocaleString('fr-FR'));
+  }
+ }catch(e){drivePhrase=null;driveMessage('Déverrouillage local impossible. Saisis ta phrase secrète.')}
+}
+async function offlineOpen(){const p=$('drivepass').value||drivePhrase;if(!p)throw Error('Saisis la phrase secrète pour ouvrir la copie hors ligne');const saved=await cacheGet('last');if(!saved)throw Error('Aucune copie chiffrée locale disponible');const clear=await decryptHBM(JSON.parse(saved.ciphertext),p);loadSnapshotText(clear,'Copie locale du '+new Date(saved.modifiedTime).toLocaleString('fr-FR'));drivePhrase=p;$('drivepass').value='';driveMessage('Mode hors ligne · copie du '+new Date(saved.modifiedTime).toLocaleString('fr-FR'))}
+$('offlineopen').onclick=async()=>{try{await offlineOpen()}catch(e){driveMessage('Échec : '+e.message)}};
+$('forgetlocal').onclick=async()=>{try{await cacheClear();driveFileId=null;drivePhrase=null;$('rememberdevice').checked=false;driveMessage('Copie et déverrouillage locaux effacés')}catch(e){driveMessage('Effacement impossible : '+e.message)}};
+cacheGet('fileId').then(id=>{if(id)driveFileId=id}).catch(()=>{});
+
 const driveMessage=s=>{$('drivestatus').textContent=s};
 $('driveclient').value=PUBLIC_OAUTH_CLIENT_ID;
 $('driveapikey').value=RESTRICTED_PICKER_API_KEY;
-// Ne jamais réutiliser automatiquement un ancien identifiant Drive.
+// Réutilise uniquement l’identifiant précédemment choisi par l’utilisateur ; OAuth reste explicite.
 function gisReady(){return new Promise((resolve,reject)=>{if(window.google?.accounts?.oauth2)return resolve();const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.onload=()=>window.google?.accounts?.oauth2?resolve():reject(Error('Service Google indisponible'));s.onerror=()=>reject(Error('Impossible de charger Google'));document.head.append(s)})}
 function pickerReady(){return new Promise((resolve,reject)=>{if(window.google?.picker)return resolve();const s=document.createElement('script');s.src='https://apis.google.com/js/api.js';s.onload=()=>gapi.load('picker',{callback:resolve,onerror:()=>reject(Error('Google Picker indisponible'))});s.onerror=()=>reject(Error('Google Picker indisponible'));document.head.append(s)})}
-async function driveRequest(url,stage='lecture'){if(!driveToken||Date.now()>driveExpires)throw Error('Session Google expirée : reconnecte-toi');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok){let detail='';try{const body=await r.json();detail=body?.error?.message||''}catch(e){}throw Error('Drive ('+stage+') : erreur '+r.status+(detail?' — '+detail:''))}return r}
+async function driveRequest(url,stage='lecture'){if(!driveToken||Date.now()>driveExpires)throw Error('Autorisation Google expirée : utilise « Connecter et actualiser ». La copie locale reste accessible.');const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken},cache:'no-store'});if(!r.ok){let detail='';try{const body=await r.json();detail=body?.error?.message||''}catch(e){}throw Error('Drive ('+stage+') : erreur '+r.status+(detail?' — '+detail:''))}return r}
 async function driveRefresh(){
- if(driveBusy)return;driveBusy=true;
+ if(driveBusy)return;driveBusy=true;lastDriveCheck=Date.now();
  try{
   if(!driveFileId)throw Error('Sélectionne d’abord ton fichier chiffré avec « Choisir le fichier »');
   if(!drivePhrase)throw Error('Phrase secrète nécessaire : reconnecte-toi');
@@ -110,19 +151,20 @@ async function driveRefresh(){
   const data=await response.text();if(data.length>42000000)throw Error('Copie trop volumineuse');
   const clear=await decryptHBM(JSON.parse(data),drivePhrase);
   loadSnapshotText(clear,'Google Drive · '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
-  driveMessage('Actualisation réussie : '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
- }catch(e){driveMessage('Échec : '+e.message)}finally{driveBusy=false}
+  try{await cacheSet('last',{ciphertext:data,modifiedTime:meta.modifiedTime});await cacheSet('fileId',driveFileId)}catch(e){console.warn('Cache local chiffré indisponible')}
+  driveMessage('Copie consultable · actualisée : '+new Date(meta.modifiedTime).toLocaleString('fr-FR'));
+ }catch(e){driveMessage('Actualisation indisponible : '+e.message+' · Dernière copie locale conservée.') }finally{driveBusy=false}
 }
 async function chooseDriveFile(){
  try{
   if(!driveToken||Date.now()>driveExpires)throw Error('Connecte Google avant de choisir le fichier');
   const key=$('driveapikey').value.trim();if(!key)throw Error('Clé API Google Picker manquante');
   await pickerReady();
-  const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setParent(DRIVE_FOLDER);
+  const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(false).setSelectFolderEnabled(false);
   const picker=new google.picker.PickerBuilder().addView(view).setOAuthToken(driveToken).setDeveloperKey(key).setAppId('799426652476').setOrigin(window.location.origin).setCallback(async data=>{
    if(data.action!==google.picker.Action.PICKED)return;
    const f=data.docs?.[0];if(!f?.id)return;
-   driveFileId=f.id;driveMessage('Fichier sélectionné : '+(f.name||'copie chiffrée')+'. Lecture en cours…');
+   driveFileId=f.id;cacheSet('fileId',driveFileId).catch(()=>{});driveMessage('Fichier sélectionné : '+(f.name||'copie chiffrée')+'. Lecture en cours…');
    await driveRefresh();
   }).build();picker.setVisible(true);
  }catch(e){driveMessage('Sélection impossible : '+e.message)}
@@ -133,17 +175,24 @@ $('driveconnect').onclick=async()=>{
   const id=$('driveclient').value.trim(),phrase=$('drivepass').value,key=$('driveapikey').value.trim();
   if(!/^[0-9]+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$/.test(id))throw Error('Identifiant OAuth invalide');
   if(!key)throw Error('Clé API Google Picker manquante');
-  if(!phrase)throw Error('Phrase secrète manquante');
+  if(!phrase&&!drivePhrase)throw Error('Phrase secrète manquante');
   await gisReady();
-  drivePhrase=phrase;$('drivepass').value='';
+  drivePhrase=phrase||drivePhrase;$('drivepass').value='';
+  if($('rememberdevice').checked&&phrase)await rememberPhrase(phrase);
+  // La copie chiffrée locale reste consultable même si l'autorisation Google échoue.
+  try{await offlineOpen()}catch(e){driveMessage('Connexion Google en cours…')}
   driveClient=google.accounts.oauth2.initTokenClient({client_id:id,scope:'https://www.googleapis.com/auth/drive.file',callback:async r=>{
    if(r.error||!r.access_token){driveMessage('Connexion refusée');return}
    driveToken=r.access_token;driveExpires=Date.now()+(Number(r.expires_in)||3500)*1000-60000;
-   driveFileId=null;driveMessage('Connexion Google réussie. Sélectionne ton fichier avec « Choisir le fichier ».');
+   driveMessage('Connexion Google réussie. '+(driveFileId?'Actualisation du fichier connu…':'Sélectionne ton fichier avec « Choisir le fichier ».'));if(driveFileId)await driveRefresh();
   },error_callback:()=>driveMessage('Connexion interrompue')});
-  driveMessage('Autorisation Google en cours…');driveClient.requestAccessToken({prompt:'consent'});
+  driveMessage('Autorisation Google en cours…');driveClient.requestAccessToken({prompt:''});
  }catch(e){driveMessage('Échec : '+e.message)}
 };
 $('driverefresh').onclick=driveRefresh;
-$('drivedisconnect').onclick=()=>{const token=driveToken;driveToken=null;driveExpires=0;drivePhrase=null;$('drivepass').value='';if(token&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(token,()=>{});driveMessage('Déconnecté. Aucun jeton ni secret conservé.')};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&driveToken&&drivePhrase&&driveFileId&&!driveBusy&&Date.now()-lastDriveCheck>300000)driveRefresh()});
+$('drivedisconnect').onclick=()=>{const token=driveToken;driveToken=null;driveExpires=0;drivePhrase=null;$('drivepass').value='';if(token&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(token,()=>{});driveMessage('Session Google déconnectée. La copie locale et le déverrouillage de confiance restent enregistrés si activés ; utilise « Effacer la copie locale » pour les supprimer.')};
 // Actualisation uniquement sur demande, jamais lors d’un simple retour à l’application.
+
+// Restaure uniquement la dernière copie chiffrée et son déverrouillage local.
+loadRememberedPhrase();

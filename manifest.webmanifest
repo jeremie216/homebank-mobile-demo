@@ -20,6 +20,6 @@
       "purpose": "any maskable"
     }
   ],
-  "description": "Lecture locale d’une copie HomeBank XHB — aucune donnée bancaire hébergée",
+  "description": "Consultation en lecture seule d’une copie HomeBank chiffrée",
   "id": "./index.html"
 }
